@@ -1,0 +1,36 @@
+# Only application code, runtime assets and build/deployment files are tracked.
+/*
+!/.gitignore
+!/.gitattributes
+!/.dockerignore
+!/.env.example
+!/Dockerfile
+!/docker-compose.yml
+!/package.json
+!/package-lock.json
+!/index.html
+!/tsconfig.json
+!/vite.config.ts
+!/start-lab.cjs
+!/启动碰撞实验室.cmd
+!/src/
+!/public/
+!/deploy/
+
+# Only these deployment files belong in the repository.
+/deploy/*
+!/deploy/nginx.conf
+!/deploy/update.sh
+
+# Local notes, dependencies, secrets and generated files stay on disk.
+*.md
+node_modules/
+dist/
+output/
+.playwright-cli/
+.vite/
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!/.env.example
