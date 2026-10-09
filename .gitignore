@@ -34,3 +34,6 @@ output/
 .env
 .env.*
 !/.env.example
+
+# Public introduction; other Markdown files remain local.
+!/README.md
