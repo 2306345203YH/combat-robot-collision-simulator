@@ -3,6 +3,8 @@ import { parseProject } from './exports';
 import { DEFAULT_EXPERIMENT, normalizeExperiment } from './defaults';
 import { validateExperiment } from './physics/geometry';
 import type { Experiment } from './types';
+import { convertOcct } from './assembly/mesh';
+import { cubeOcct } from './assembly/test-fixtures';
 
 const project = (config: unknown): string => JSON.stringify({ format: 'robot-collision-lab', version: 1, config });
 
@@ -39,6 +41,19 @@ describe('normalizeExperiment', () => {
 });
 
 describe('parseProject', () => {
+  it('round-trips STEP meshes and per-part material data',()=>{
+    const config=structuredClone(DEFAULT_EXPERIMENT);config.mode='weapon-assembly';config.assembly=convertOcct(cubeOcct(),'part.step');config.assembly.parts[0].material.name='实测材料';
+    const restored=parseProject(project(config)).config;
+    expect(restored.assembly?.parts[0].material.name).toBe('实测材料');expect(restored.assembly?.parts[0].vertices).toEqual(config.assembly.parts[0].vertices);
+  });
+  it('rejects corrupted STEP meshes during project import',()=>{
+    const config=structuredClone(DEFAULT_EXPERIMENT);config.mode='weapon-assembly';config.assembly=convertOcct(cubeOcct(),'part.step');config.assembly.parts[0].indices[0]=999999;
+    expect(()=>parseProject(project(config))).toThrow('网格无效');
+  });
+  it('still validates disabled geometry before it is opened in the assembly inspector',()=>{
+    const config=structuredClone(DEFAULT_EXPERIMENT);config.mode='weapon-assembly';config.assembly=convertOcct(cubeOcct(),'part.step');const p=config.assembly.parts[0];p.enabled=false;p.center=[Infinity,0,0];
+    expect(()=>parseProject(project(config))).toThrow('位置无效');
+  });
   it('round-trips the default project', () => {
     const parsed = parseProject(project(DEFAULT_EXPERIMENT));
     expect(parsed.config.name).toBe(DEFAULT_EXPERIMENT.name);

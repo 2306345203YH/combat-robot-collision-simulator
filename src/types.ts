@@ -1,3 +1,5 @@
+import type { AssemblyTarget, AssemblyFrame, PartDamage } from './assembly/types';
+import type { FragmentRecord } from './assembly/physics';
 export type Vec2 = [number, number];
 export type Vec3 = [number, number, number];
 export type Quat = [number, number, number, number];
@@ -19,7 +21,7 @@ export interface ArmorConfig {
  mount: 'fixed' | 'robot'; profile: Profile; drawing?: DrawingImage;
 }
 export interface Experiment {
- schemaVersion: 1; name: string; mode: 'weapon-armor' | 'weapon-weapon'; a: Combatant; b: Combatant; armor: ArmorConfig;
+ schemaVersion: 1; name: string; mode: 'weapon-armor' | 'weapon-weapon' | 'weapon-assembly'; a: Combatant; b: Combatant; armor: ArmorConfig; assembly?: AssemblyTarget;
  settings: {
   duration: number; step: number; restitution: number; friction: number; groundFriction: number;
   gap: number; startDistance: number; lateralOffset: number; aHeadingDeg: number; bHeadingDeg: number;
@@ -28,12 +30,12 @@ export interface Experiment {
  };
 }
 export interface MassProperties { mass: number; volume: number; area: number; centroid: Vec3; inertia: Vec3; productXY: number; principalInertia: Vec3; principalRotation: Quat; axisInertia: number; radius: number }
-export type BodyId = 'aChassis' | 'aWeapon' | 'bChassis' | 'bWeapon' | 'bArmor';
+export type BodyId = 'aChassis' | 'aWeapon' | 'bChassis' | 'bWeapon' | 'bArmor' | 'targetAssembly';
 export interface Pose { position: Vec3; rotation: Quat }
-export interface Frame { time: number; poses: Partial<Record<BodyId, Pose>>; rpmA: number; rpmB: number; speedA: number; speedB: number; rotationalA: number; rotationalB: number; kinetic: number; potential: number; driveWork: number; impulse: number }
+export interface Frame { time: number; poses: Partial<Record<BodyId, Pose>>; assembly?: AssemblyFrame; rpmA: number; rpmB: number; speedA: number; speedB: number; rotationalA: number; rotationalB: number; kinetic: number; potential: number; driveWork: number; impulse: number }
 export interface ContactEvent { time: number; point: Vec3; normal: Vec3; impulse: number; pair: string; rpmBeforeA: number; rpmAfterA: number; rpmBeforeB: number; rpmAfterB: number }
 export interface SimulationResult {
- id: string; createdAt: string; engine: string; config: Experiment; frames: Frame[]; events: ContactEvent[];
+ id: string; createdAt: string; engine: string; config: Experiment; frames: Frame[]; events: ContactEvent[]; damage?: PartDamage[]; fragments?: FragmentRecord[];
  summary: { initialEnergy: number; finalEnergy: number; driveWork: number; dissipated: number; totalImpulse: number; maxJointError: number; maxJointAngleError?: number; maxJointVelocityError?: number; elapsedMs: number; steps: number; actualStep: number; energyGain: number; status: 'ok' | 'review'; warnings: string[] };
 }
 export interface ValidationIssue { path: string; message: string; level: 'error' | 'warning' }

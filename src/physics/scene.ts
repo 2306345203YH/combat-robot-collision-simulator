@@ -24,6 +24,15 @@ const weaponExtentX = (w: WeaponConfig): number => weaponMassProperties(w).radiu
 const armorExtentX = (a: ArmorConfig): number => distanceX(getArmorProfile(a).outer, (90 - a.angleDeg) * Math.PI / 180);
 const pose = (position: Vec3, rotation: [number, number, number, number]): Pose => ({ position, rotation });
 
+function assemblyExtent(config:Experiment,heading:Vec3,yaw:Q):number {
+  const target=config.assembly;if(!target)return .1;let extent=0;
+  for(const part of target.parts)if(part.enabled)for(const x of [-1,1])for(const z of [-1,1]){
+    const p=qrotate(yaw,[part.center[0]+x*part.size[0]/2,0,part.center[2]+z*part.size[2]/2]);
+    extent=Math.max(extent,-p[0]*heading[0]-p[2]*heading[2]);
+  }
+  return Math.max(.001,extent);
+}
+
 /**
  * Deterministic initial placement shared by the Rapier worker and the Three.js
  * preview. The two active objects are separated by `settings.gap` along x;
@@ -44,7 +53,7 @@ export function getInitialPoses(config: Experiment): Partial<Record<BodyId, Pose
   const aY = config.a.robot.weaponHeight;
   const aChassisX = config.mode === 'weapon-weapon'
     ? -(aExt + aOverhang + weaponExtentX(config.b.weapon) + config.b.robot.overhang + gap) / 2
-    : -(aExt + aOverhang + armorExtentX(config.armor) + gap);
+    : -(aExt + aOverhang + (config.mode==='weapon-assembly'?assemblyExtent(config,aHeading,bYaw):armorExtentX(config.armor)) + gap);
   const aChassis: Vec3 = [aHeading[0] * aChassisX, config.a.robot.height / 2, aHeading[2] * aChassisX];
   const aAnchor: Vec3 = [config.a.robot.overhang, config.a.robot.weaponHeight - config.a.robot.height / 2, 0];
   const aWeapon: Vec3 = add(aChassis, qrotate(aYaw, aAnchor));
@@ -59,6 +68,8 @@ export function getInitialPoses(config: Experiment): Partial<Record<BodyId, Pose
     const bAnchor: Vec3 = [-config.b.robot.overhang, config.b.robot.weaponHeight - config.b.robot.height / 2, 0];
     result.bChassis = pose(bChassis, bYaw);
     result.bWeapon = pose(add(bChassis, qrotate(bYaw, bAnchor)), qmul(bYaw, config.b.weapon.axis === 'horizontal' ? qy(phaseB) : qz(phaseB)));
+  } else if(config.mode==='weapon-assembly') {
+    result.targetAssembly=pose([0,config.assembly?.heightOffset??0,lateral],bYaw);
   } else {
     const armorX = 0;
     result.bArmor = pose([armorX, config.armor.height, lateral], qmul(bYaw, qz((90 - config.armor.angleDeg) * Math.PI / 180)));

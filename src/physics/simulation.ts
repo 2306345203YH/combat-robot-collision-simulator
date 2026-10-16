@@ -3,6 +3,7 @@ import type { ArmorConfig, BodyId, ContactEvent, Experiment, Frame, MassProperti
 import { armorMassProperties, getArmorProfile, getWeaponProfile, rpmAtStart, triangulateProfile, validateExperiment, weaponMassProperties } from './geometry';
 import { getInitialPoses } from './scene';
 import { snapshotMotion, readContactImpulse } from './contacts';
+import { createAssemblyPhysics,processAssemblyHit,assemblyFrame,type AssemblyPhysics } from '../assembly/physics';
 
 type BodyMap = Partial<Record<BodyId, RAPIER.RigidBody>>;
 type ColliderMap = Partial<Record<BodyId, RAPIER.Collider[]>>;
@@ -42,6 +43,7 @@ const rapierQuat = (q: Quat): { x: number; y: number; z: number; w: number } => 
 const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 
 interface Runtime {
+  assembly?: AssemblyPhysics;
   world: RAPIER.World;
   bodies: BodyMap;
   colliders: ColliderMap;
@@ -168,7 +170,12 @@ function makeRuntime(config: Experiment): Runtime {
 
   let bWeaponProps: MassProperties | undefined;
   let armorProps: MassProperties | undefined;
-  if (config.mode === 'weapon-weapon') {
+  let assembly:AssemblyPhysics|undefined;
+  if(config.mode==='weapon-assembly'&&config.assembly){
+    const yaw=config.settings.bHeadingDeg*Math.PI/180;
+    assembly=createAssemblyPhysics(world,config.assembly,initial.targetAssembly!,[-Math.cos(yaw),0,Math.sin(yaw)]);
+    bodies.targetAssembly=assembly.root;colliders.targetAssembly=[...assembly.entries.values()].map(e=>e.collider);
+  } else if (config.mode === 'weapon-weapon') {
     bWeaponProps = weaponMassProperties(config.b.weapon);
     const bChassisMass = Math.max(config.b.robot.mass - bWeaponProps.mass, 1e-4);
     bodies.bChassis = createBody(world, 'bChassis', initial.bChassis!, bodyMassProperties(bChassisMass, config.b.robot.length, config.b.robot.height, config.b.robot.width), false);
@@ -208,18 +215,18 @@ function makeRuntime(config: Experiment): Runtime {
   if (config.mode === 'weapon-weapon' && bodies.bChassis && bodies.bWeapon) {
     bodies.bChassis.setLinvel(rapierVec(vecScale(bHeading, config.b.robot.speed)), true);
     setWeaponState('bWeapon', 'bChassis', config.b.weapon, config.b.robot.speed);
-  } else if (config.armor.mount === 'robot' && bodies.bChassis && bodies.bArmor) {
+  } else if (config.mode==='weapon-armor'&&config.armor.mount === 'robot' && bodies.bChassis && bodies.bArmor) {
     const velocity = rapierVec(vecScale(bHeading, config.b.robot.speed));
     bodies.bChassis.setLinvel(velocity, true);
     bodies.bArmor.setLinvel(velocity, true);
   }
   const attack = [...(colliders.aWeapon ?? [])];
-  const targets = config.mode === 'weapon-weapon' ? [...(colliders.bWeapon ?? [])] : [...(colliders.bArmor ?? [])];
+  const targets = config.mode==='weapon-assembly'?[...(colliders.targetAssembly??[])]:config.mode === 'weapon-weapon' ? [...(colliders.bWeapon ?? [])] : [...(colliders.bArmor ?? [])];
   const horizontalDirection = (q: Quat, local: Vec3): Vec3 => {
     const forward = qrotate(q, local); const length = Math.hypot(forward[0], forward[2]);
     return length > 1e-8 ? [forward[0] / length, 0, forward[2] / length] : [local[0], 0, local[2]];
   };
-  return { world, bodies, colliders, attack, targets, ground: [groundCollider], configs: { aWeapon: config.a.weapon, bWeapon: config.mode === 'weapon-weapon' ? config.b.weapon : undefined, armor: config.mode === 'weapon-armor' ? config.armor : undefined }, props: { aWeapon: aWeaponProps, bWeapon: bWeaponProps, armor: armorProps }, initial, driveDirections: { a: horizontalDirection(initial.aChassis!.rotation, [1, 0, 0]), b: initial.bChassis ? horizontalDirection(initial.bChassis.rotation, [-1, 0, 0]) : undefined }, driveWork: 0, impulse: 0, warnings: [] };
+  return { assembly,world, bodies, colliders, attack, targets, ground: [groundCollider], configs: { aWeapon: config.a.weapon, bWeapon: config.mode === 'weapon-weapon' ? config.b.weapon : undefined, armor: config.mode === 'weapon-armor' ? config.armor : undefined }, props: { aWeapon: aWeaponProps, bWeapon: bWeaponProps, armor: armorProps }, initial, driveDirections: { a: horizontalDirection(initial.aChassis!.rotation, [1, 0, 0]), b: initial.bChassis ? horizontalDirection(initial.bChassis.rotation, [-1, 0, 0]) : undefined }, driveWork: 0, impulse: 0, warnings: [] };
 }
 
 function axisFor(w: WeaponConfig): Vec3 { return w.axis === 'horizontal' ? [0, 1, 0] : [0, 0, 1]; }
@@ -244,16 +251,17 @@ function poseOf(body: RAPIER.RigidBody | undefined): Pose | undefined {
 }
 function frameOf(runtime: Runtime, config: Experiment, time: number): Frame {
   const poses: Partial<Record<BodyId, Pose>> = {};
-  for (const id of ['aChassis', 'aWeapon', 'bChassis', 'bWeapon', 'bArmor'] as BodyId[]) { const p = poseOf(runtime.bodies[id]); if (p) poses[id] = p; }
+  for (const id of Object.keys(runtime.bodies) as BodyId[]) { const p = poseOf(runtime.bodies[id]); if (p) poses[id] = p; }
   const aOmega = weaponOmega(runtime.bodies.aWeapon, config.a.weapon, runtime.bodies.aChassis); const bOmega = config.mode === 'weapon-weapon' ? weaponOmega(runtime.bodies.bWeapon, config.b.weapon, runtime.bodies.bChassis) : 0;
   const rpmA = aOmega * 30 / Math.PI; const rpmB = bOmega * 30 / Math.PI;
   let totalKinetic = 0; let potentialEnergy = 0;
   for (const body of Object.values(runtime.bodies)) if (body) { totalKinetic += kinetic(body); potentialEnergy += potential(body, config.settings.gravity); }
+  runtime.assembly?.bodies.forEach(body=>{totalKinetic+=kinetic(body);potentialEnergy+=potential(body,config.settings.gravity)});
   const rotationalA = 0.5 * runtime.props.aWeapon.axisInertia * aOmega ** 2;
   const rotationalB = runtime.props.bWeapon ? 0.5 * runtime.props.bWeapon.axisInertia * bOmega ** 2 : 0;
   const speedA = runtime.bodies.aChassis ? norm(asVec3(runtime.bodies.aChassis.linvel())) : 0;
-  const speedB = runtime.bodies.bChassis ? norm(asVec3(runtime.bodies.bChassis.linvel())) : 0;
-  return { time, poses, rpmA, rpmB, speedA, speedB, rotationalA, rotationalB, kinetic: totalKinetic, potential: potentialEnergy, driveWork: runtime.driveWork, impulse: runtime.impulse };
+  const speedB = runtime.bodies.targetAssembly?norm(asVec3(runtime.bodies.targetAssembly.linvel())):runtime.bodies.bChassis ? norm(asVec3(runtime.bodies.bChassis.linvel())) : 0;
+  return { time, poses, assembly:runtime.assembly?assemblyFrame(runtime.assembly):undefined,rpmA, rpmB, speedA, speedB, rotationalA, rotationalB, kinetic: totalKinetic, potential: potentialEnergy, driveWork: runtime.driveWork, impulse: runtime.impulse };
 }
 
 function applyDrive(runtime: Runtime, config: Experiment, dt: number): number {
@@ -292,7 +300,7 @@ function applyForwardDrive(runtime: Runtime, config: Experiment, time: number, d
   // armor target we also advance B; weapon-versus-weapon tests retain their
   // independent initial velocities to avoid two opposing traction loops
   // pinning the contact manifold indefinitely.
-  if (config.armor.mount === 'robot' && runtime.driveDirections.b) entries.push(['bChassis', config.b.robot, runtime.driveDirections.b, ['bArmor']]);
+  if (config.mode==='weapon-armor'&&config.armor.mount === 'robot' && runtime.driveDirections.b) entries.push(['bChassis', config.b.robot, runtime.driveDirections.b, ['bArmor']]);
   let work = 0;
   for (const [id, robot, direction, attachedIds] of entries) {
     const body = runtime.bodies[id];
@@ -320,7 +328,7 @@ function jointError(runtime: Runtime, config: Experiment): {position:number;angl
   let max = 0,angle=0,velocity=0;
   const checks: Array<[BodyId, BodyId, Vec3]> = [['aChassis', 'aWeapon', [config.a.robot.overhang, config.a.robot.weaponHeight - config.a.robot.height / 2, 0]]];
   if (config.mode === 'weapon-weapon') checks.push(['bChassis', 'bWeapon', [-config.b.robot.overhang, config.b.robot.weaponHeight - config.b.robot.height / 2, 0]]);
-  else if (config.armor.mount === 'robot') checks.push(['bChassis', 'bArmor', vecSub(runtime.initial.bArmor!.position,runtime.initial.bChassis!.position)]);
+  else if (config.mode==='weapon-armor'&&config.armor.mount === 'robot') checks.push(['bChassis', 'bArmor', vecSub(runtime.initial.bArmor!.position,runtime.initial.bChassis!.position)]);
   for (const [parentId, childId, anchor] of checks) {
     const parent = runtime.bodies[parentId]; const child = runtime.bodies[childId]; if (!parent || !child) continue;
     const pp = asVec3(parent.translation()); const pq = parent.rotation(); const expected = vecAdd(pp, qrotate([pq.x, pq.y, pq.z, pq.w], anchor));
@@ -368,24 +376,31 @@ export async function simulate(config: Experiment, onProgress?: (progress: numbe
     const stepDt = Math.min(dt, Math.max(0, snapshot.settings.duration - time));
     if (stepDt <= 0) break;
     runtime.world.timestep = stepDt;
+    // Rapier forces persist between steps. Reset the driver's previous force
+    // so its bounded traction does not accumulate or continue after its window.
+    for(const body of [...Object.values(runtime.bodies),...(runtime.assembly?.bodies.values()??[])])body?.resetForces(false);
     runtime.driveWork += applyDrive(runtime, snapshot, stepDt);
     runtime.driveWork += applyForwardDrive(runtime, snapshot, time, stepDt);
-    const motionBefore=snapshotMotion(Object.values(runtime.bodies));
+    const motionBefore=snapshotMotion([...Object.values(runtime.bodies),...(runtime.assembly?.bodies.values()??[])]);
     runtime.world.step();
     time = step===steps?snapshot.settings.duration:step*dt;
     const afterA = weaponOmega(runtime.bodies.aWeapon, snapshot.a.weapon, runtime.bodies.aChassis) * 30 / Math.PI;
     const afterB = snapshot.mode === 'weapon-weapon' && runtime.bodies.bWeapon ? weaponOmega(runtime.bodies.bWeapon, snapshot.b.weapon, runtime.bodies.bChassis) * 30 / Math.PI : 0;
     const pairContacts = new Map<string, { impulse: number; point: Vec3; normal: Vec3 }>();
+    const assemblyHits:Array<{collider:RAPIER.Collider;contact:{impulse:number;point:Vec3;normal:Vec3}}>=[];
     let contactChanged=false;
     for (const attack of runtime.attack) {
       runtime.world.contactPairsWith(attack, (other) => {
-        if (!targetHandles.has(other.handle) && !groundHandles.has(other.handle)) return;
+        if (!targetHandles.has(other.handle) && !groundHandles.has(other.handle)&&!runtime.assembly?.handles.has(other.handle)) return;
         const contact = readContactImpulse(runtime.world, attack, other, motionBefore); if (!contact || contact.impulse <= 1e-9) return;
-        const pair = groundHandles.has(other.handle) ? 'aWeapon-ground' : snapshot.mode === 'weapon-weapon' ? 'aWeapon-bWeapon' : 'aWeapon-bArmor';
+        const partId=runtime.assembly?.handles.get(other.handle);
+        const pair = groundHandles.has(other.handle) ? 'aWeapon-ground' : partId?`aWeapon-${partId}`:snapshot.mode === 'weapon-weapon' ? 'aWeapon-bWeapon' : 'aWeapon-bArmor';
+        if(partId)assemblyHits.push({collider:other,contact});
         const prior = pairContacts.get(pair);
         if (prior) { prior.impulse += contact.impulse; prior.point = contact.point; prior.normal = contact.normal; } else pairContacts.set(pair, contact);
       });
     }
+    if(runtime.assembly)for(const hit of assemblyHits)if(runtime.assembly.handles.has(hit.collider.handle))processAssemblyHit(runtime.world,runtime.assembly,runtime.bodies.aWeapon!,hit.collider,hit.contact,motionBefore,time,snapshot.a.weapon.thickness);
     for (const [pair, contact] of pairContacts) {
       runtime.impulse += contact.impulse;
       const previous = active.get(pair);
@@ -411,6 +426,7 @@ export async function simulate(config: Experiment, onProgress?: (progress: numbe
   const finalFrame = frames.at(-1)!; const finalEnergy = finalFrame.kinetic + finalFrame.potential;
   const dissipated = initialEnergy + runtime.driveWork - finalEnergy;
   const warnings = issues.filter((issue) => issue.level === 'warning').map((issue) => `${issue.path}: ${issue.message}`);
+  if(runtime.assembly)warnings.push(...new Set(runtime.assembly.warnings));
   if (!events.length) warnings.push('本次计算未记录到武器与目标的有效接触冲量；请检查初始间距、安装高度、速度和仿真时长。');
   if (dissipated < -Math.max(0.01, initialEnergy * 0.02)) warnings.push('机械能增加超过驱动做功容差，建议减小时间步或提高求解迭代。');
   if (maxJointError > 1e-4) warnings.push(`关节轴心位置漂移 ${(maxJointError * 1000).toFixed(3)} mm，超过 0.1 mm 门槛。`);
@@ -420,6 +436,8 @@ export async function simulate(config: Experiment, onProgress?: (progress: numbe
   const result: SimulationResult = {
     id: `sim-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(), engine: 'Rapier3D 0.20.0 · CCD · compound convex-hull', config: snapshot, frames, events,
+    damage:runtime.assembly?[...runtime.assembly.entries.values()].flatMap(e=>e.damage?[e.damage]:[]):undefined,
+    fragments:runtime.assembly?.fragments,
     summary: { initialEnergy, finalEnergy, driveWork: runtime.driveWork, dissipated, totalImpulse: runtime.impulse, maxJointError,maxJointAngleError,maxJointVelocityError, elapsedMs, steps, actualStep: dt, energyGain: finalEnergy - initialEnergy -runtime.driveWork, status: warnings.length ? 'review' : 'ok', warnings },
   };
   return result;

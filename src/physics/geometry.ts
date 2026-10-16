@@ -1,4 +1,5 @@
 import earcut from 'earcut';
+import { validateAssembly } from '../assembly/validation';
 import type { ArmorConfig, Experiment, MassProperties, Profile, RobotConfig, ValidationIssue, Vec2, WeaponConfig } from '../types';
 
 const TAU = Math.PI * 2;
@@ -279,7 +280,7 @@ export function validateExperiment(config: Experiment): ValidationIssue[] {
   });
   const robots:[string,RobotConfig,number,WeaponConfig|null][]=[['a.robot',config.a.robot,weaponMassProperties(config.a.weapon).mass,config.a.weapon]];
   if(config.mode==='weapon-weapon')robots.push(['b.robot',config.b.robot,weaponMassProperties(config.b.weapon).mass,config.b.weapon]);
-  else if(config.armor.mount==='robot')robots.push(['b.robot',config.b.robot,armorMassProperties(config.armor).mass,null]);
+  else if(config.mode==='weapon-armor'&&config.armor.mount==='robot')robots.push(['b.robot',config.b.robot,armorMassProperties(config.armor).mass,null]);
   robots.forEach(([path,r,partMass,w])=>{
     for(const key of ['mass','length','width','height'] as const)addPositive(issues,path+'.'+key,r[key],{mass:'整车总质量',length:'车体长度',width:'车体宽度',height:'车体高度'}[key]);
     addPositive(issues,path+'.speed',r.speed,'本次车速',true);addPositive(issues,path+'.maxSpeed',r.maxSpeed,'最大车速',true);
@@ -322,6 +323,7 @@ export function validateExperiment(config: Experiment): ValidationIssue[] {
   for(const k of ['aHeadingDeg','bHeadingDeg'] as const)if(!finite(config.settings[k]))err('settings.'+k,'车体面向角度必须是有限数值。');
   if(!finite(config.settings.lateralOffset))err('settings.lateralOffset','横向偏移必须为有限数值。');
   if(!Number.isInteger(config.settings.seed))err('settings.seed','随机种子应为整数。');
+  if(config.mode==='weapon-assembly')issues.push(...validateAssembly(config.assembly));
   return issues;
 }
 
