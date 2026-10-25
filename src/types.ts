@@ -1,17 +1,24 @@
 import type { AssemblyTarget, AssemblyFrame, PartDamage } from './assembly/types';
 import type { FragmentRecord } from './assembly/physics';
+import type { PartMaterial } from './assembly/types';
 export type Vec2 = [number, number];
 export type Vec3 = [number, number, number];
 export type Quat = [number, number, number, number];
 export interface Profile { outer: Vec2[]; holes: Vec2[][] }
 export interface DrawingImage { dataUrl: string; width: number; height: number; scale: number; origin: Vec2 }
-export type WeaponShape = 'disk' | 'ring' | 'bar' | 'tooth2' | 'tooth1' | 'custom';
+export type WeaponShape = 'disk' | 'ring' | 'bar' | 'tooth2' | 'tooth1' | 'custom' | 'mesh';
+export interface WeaponModel {
+ filename:string; format:'step'|'stl'; vertices:number[]; indices:number[];
+ sourceUnit:'m'|'mm'|'cm'|'inch'; sourceCenter:Vec3; size:Vec3;
+ axisPoint:Vec3; spinAxis:'x'|'y'|'z'; warnings:string[];
+}
 export interface WeaponConfig {
  name: string; materialId: string; materialName: string; density: number;
  shape: WeaponShape; radius: number; innerRadius: number; length: number; width: number; thickness: number;
  axisOffset: Vec2; profile: Profile; drawing?: DrawingImage;
  axis: 'vertical' | 'horizontal'; peakRpm: number; spinupTime: number; elapsedSpinup: number;
  rpmMode: 'ramp' | 'direct'; initialRpm: number; direction: 1 | -1; phaseDeg: number; driveEnabled: boolean;
+ model?: WeaponModel; material?: PartMaterial;
 }
 export interface RobotConfig { mass: number; length: number; width: number; height: number; maxSpeed: number; speed: number; weaponHeight: number; overhang: number }
 export interface Combatant { weapon: WeaponConfig; robot: RobotConfig }
@@ -19,6 +26,7 @@ export interface ArmorConfig {
  name: string; materialId: string; materialName: string; density: number; shape: 'plate' | 'bent' | 'custom';
  length: number; width: number; thickness: number; angleDeg: number; height: number;
  mount: 'fixed' | 'robot'; profile: Profile; drawing?: DrawingImage;
+ damageEnabled?: boolean; material?: PartMaterial;
 }
 export interface Experiment {
  schemaVersion: 1; name: string; mode: 'weapon-armor' | 'weapon-weapon' | 'weapon-assembly'; a: Combatant; b: Combatant; armor: ArmorConfig; assembly?: AssemblyTarget;

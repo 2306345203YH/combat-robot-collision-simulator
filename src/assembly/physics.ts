@@ -7,7 +7,7 @@ import { splitMesh } from './fracture';
 import { dot3,sub3,cross3 } from './mesh';
 
 export interface FragmentRecord {id:string;partId:string;vertices:number[];indices:number[]}
-interface Entry {part:AssemblyPart;body:R.RigidBody;collider:R.Collider;damage?:PartDamage;impulse:number;detached:boolean}
+interface Entry {part:AssemblyPart;body:R.RigidBody;collider:R.Collider;colliders?:R.Collider[];damage?:PartDamage;impulse:number;detached:boolean}
 export interface AssemblyPhysics {
   root:R.RigidBody; entries:Map<string,Entry>; handles:Map<number,string>;
   bodies:Map<string,R.RigidBody>; fragments:FragmentRecord[]; warnings:string[]; config:AssemblyTarget;
@@ -32,6 +32,11 @@ export function createAssemblyPhysics(world:R.World,target:AssemblyTarget,pose:P
   root.recomputeMassPropertiesFromColliders();if(target.mount==='free')root.setLinvel(rv(heading.map(v=>v*target.speed) as Vec3),true);
   return {root,entries,handles,bodies:new Map(),fragments:[],warnings:[],config:target};
 }
+/** Register a pre-existing profile body without changing its mass or colliders. */
+export function registerArmorDamage(body:R.RigidBody,colliders:R.Collider[],target:AssemblyTarget):AssemblyPhysics{
+ const part=target.parts[0];if(!colliders.length)throw new Error('护甲没有有效碰撞体。');
+ return {root:body,entries:new Map([[part.id,{part,body,collider:colliders[0],colliders,impulse:0,detached:false}]]),handles:new Map(colliders.map(c=>[c.handle,part.id])),bodies:new Map(),fragments:[],warnings:[],config:target};
+}
 function velocityBefore(body:R.RigidBody,p:Vec3,snapshot:MotionSnapshot):Vec3 {
   if(body.isFixed())return [0,0,0];const state=snapshot.get(body.handle);if(!state)return vv(body.velocityAtPoint(rv(p)));const spin=cross3(state.angular,sub3(p,state.com));return state.linear.map((v,i)=>v+spin[i]) as Vec3;
 }
@@ -48,7 +53,7 @@ function release(world:R.World,runtime:AssemblyPhysics,entry:Entry,fracture:bool
   const pieces=fracture?splitMesh(damaged.vertices,damaged.indices,entry.damage!.normal):[];
   if(fracture&&!pieces.length){runtime.warnings.push(`${p.name} 简化裂面未形成两个有效实体，按整件脱落处理。`);}
   const sources=pieces.length?pieces:[{vertices:damaged.vertices,indices:damaged.indices,fraction:1}];
-  runtime.handles.delete(entry.collider.handle);world.removeCollider(entry.collider,true);
+  for(const collider of entry.colliders??[entry.collider]){runtime.handles.delete(collider.handle);world.removeCollider(collider,true);}entry.colliders=undefined;
   if(entry.detached){world.removeRigidBody(parent);runtime.bodies.delete(p.id);}else if(!parent.isFixed()){
     parent.recomputeMassPropertiesFromColliders();parent.setLinvel(rv(velocityAt(vv(parent.worldCom()))),true);
   }

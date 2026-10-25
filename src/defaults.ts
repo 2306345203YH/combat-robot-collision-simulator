@@ -1,5 +1,7 @@
 import type { Experiment, WeaponConfig, RobotConfig, MaterialOption } from './types';
+import { PART_MATERIALS, PRINTED_REFERENCE_NOTE } from './assembly/materials';
 export const MATERIALS: MaterialOption[] = [
+ ...['pla15','petg15'].map(id=>({id,name:PART_MATERIALS[id].name,density:PART_MATERIALS[id].density,note:PRINTED_REFERENCE_NOTE,source:PART_MATERIALS[id].source})),
  { id:'steel',name:'钢 · 密度假设',density:7850,note:'仅用于质量计算；不是任何具体热处理牌号的强度材料卡。',source:'用户可改的教学密度假设' },
  { id:'aluminum',name:'铝合金 · 密度假设',density:2700,note:'不包含屈服、断裂或热处理性能。',source:'用户可改的教学密度假设' },
  { id:'titanium',name:'钛合金 · 密度假设',density:4430,note:'不包含强度数据；请用实际牌号和实测密度校正。',source:'用户可改的教学密度假设' },
@@ -18,6 +20,6 @@ export const cloneExperiment=(e:Experiment):Experiment=>structuredClone(e);
  * otherwise be rejected as "类型或数值无效".
  */
 export function normalizeExperiment(config: Experiment): Experiment {
-  return { ...config, settings: { ...DEFAULT_EXPERIMENT.settings, ...(config?.settings ?? {}) } };
+  return { ...config, armor:{...config.armor,damageEnabled:config.armor?.damageEnabled??false},settings: { ...DEFAULT_EXPERIMENT.settings, ...(config?.settings ?? {}) } };
 }
-export const SHAPE_LABELS={disk:'实心圆盘',ring:'带孔圆盘 / 圆环',bar:'矩形转杆',tooth2:'双齿盘',tooth1:'单齿盘',custom:'自定义轮廓'};
+export const SHAPE_LABELS={disk:'实心圆盘',ring:'带孔圆盘 / 圆环',bar:'矩形转杆',tooth2:'双齿盘',tooth1:'单齿盘',custom:'自定义轮廓',mesh:'STEP / STL 实体武器'};

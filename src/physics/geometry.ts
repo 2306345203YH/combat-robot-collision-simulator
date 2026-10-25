@@ -1,5 +1,7 @@
 import earcut from 'earcut';
 import { validateAssembly } from '../assembly/validation';
+import { armorMaterial,validatePartMaterial } from '../assembly/materials';
+import { meshMassProperties, weaponMesh, validateWeaponModel, weaponAxialBounds,validateWeaponMaterial } from './weaponMesh';
 import type { ArmorConfig, Experiment, MassProperties, Profile, RobotConfig, ValidationIssue, Vec2, WeaponConfig } from '../types';
 
 const TAU = Math.PI * 2;
@@ -29,6 +31,12 @@ export function getWeaponProfile(w: WeaponConfig): Profile {
   const radius = Math.max(0, w.radius);
   let profile: Profile;
   switch (w.shape) {
+    case 'mesh': {
+      // UI projection only. Physics and mass use the complete 3-D mesh.
+      const v=weaponMesh(w).vertices;let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+      for(let i=0;i<v.length;i+=3){x0=Math.min(x0,v[i]);x1=Math.max(x1,v[i]);y0=Math.min(y0,v[i+1]);y1=Math.max(y1,v[i+1]);}
+      return {outer:[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],holes:[]};
+    }
     case 'disk':
       profile = { outer: circlePoints(radius), holes: [] };
       break;
@@ -185,6 +193,7 @@ function weaponMassPropertiesBase(w: WeaponConfig): MassProperties {
 
 /** Axis properties include the parallel-axis term; tip radius is geometric. */
 export function weaponMassProperties(w: WeaponConfig): MassProperties {
+  if(w.shape==='mesh'){const mesh=weaponMesh(w);return meshMassProperties(mesh.vertices,mesh.indices,w.density);}
   const p = weaponMassPropertiesBase(w);
   p.axisInertia = p.inertia[2] + p.mass * (p.centroid[0] ** 2 + p.centroid[1] ** 2);
   p.radius = Math.max(0, ...getWeaponProfile(w).outer.map(([x,y]) => Math.hypot(x,y)));
@@ -259,9 +268,10 @@ export function validateExperiment(config: Experiment): ValidationIssue[] {
   if(config.mode==='weapon-weapon') weapons.push(['b.weapon',config.b.weapon]);
   const err=(path:string,message:string)=>issues.push({path,message,level:'error'});
   weapons.forEach(([path,w])=>{
-    if(!['disk','ring','bar','tooth1','tooth2','custom'].includes(w.shape)) err(path+'.shape','未知武器模板。');
-    addPositive(issues,path+'.density',w.density,'密度');addPositive(issues,path+'.thickness',w.thickness,'武器厚度');
-    if(w.shape!=='bar'&&w.shape!=='custom')addPositive(issues,path+'.radius',w.radius,'半径');
+    for(const message of validateWeaponMaterial(w))err(path+'.material',message);
+    if(!['disk','ring','bar','tooth1','tooth2','custom','mesh'].includes(w.shape)) err(path+'.shape','未知武器模板。');
+    addPositive(issues,path+'.density',w.density,'密度');if(w.shape!=='mesh')addPositive(issues,path+'.thickness',w.thickness,'武器厚度');
+    if(!['bar','custom','mesh'].includes(w.shape))addPositive(issues,path+'.radius',w.radius,'半径');
     if(w.shape==='ring'){addPositive(issues,path+'.innerRadius',w.innerRadius,'孔半径',true);if(w.innerRadius>=w.radius)err(path+'.innerRadius','孔半径必须小于外半径。');}
     if(w.shape==='bar'){addPositive(issues,path+'.length',w.length,'武器长度');addPositive(issues,path+'.width',w.width,'武器宽度');}
     if(w.shape==='tooth1'||w.shape==='tooth2')addPositive(issues,path+'.width',w.width,'齿突出量');
@@ -273,13 +283,15 @@ export function validateExperiment(config: Experiment): ValidationIssue[] {
     if(w.direction!==1&&w.direction!==-1)err(path+'.direction','旋转方向必须为正向或负向。');
     if(!finite(w.phaseDeg))err(path+'.phaseDeg','初始相位必须为有限数值。');
     if(!Array.isArray(w.axisOffset)||w.axisOffset.length!==2||!w.axisOffset.every(finite))err(path+'.axisOffset','轴心偏移无效。');
+    if(w.shape==='mesh'){for(const message of validateWeaponModel(w.model))err(path+'.model',message);issues.push({path:path+'.model',level:'warning',message:'实体武器使用原网格质量/惯量和凸包接触近似；孔洞/凹腔不参与咬合，武器保持刚体，强度参数不产生武器自身裂纹。'});return;}
     const profile=getWeaponProfile(w);
     if(profile.outer.length+profile.holes.flat().length>1024)err(path+'.profile','第一版轮廓最多 1024 个顶点，请先简化轮廓。');
     if([...profile.outer,...profile.holes.flat()].some(p=>p.length!==2||!p.every(finite)))err(path+'.profile','轮廓点必须是有限的二维坐标。');
     else issues.push(...validateProfile(profile,path+'.profile'));
   });
-  const robots:[string,RobotConfig,number,WeaponConfig|null][]=[['a.robot',config.a.robot,weaponMassProperties(config.a.weapon).mass,config.a.weapon]];
-  if(config.mode==='weapon-weapon')robots.push(['b.robot',config.b.robot,weaponMassProperties(config.b.weapon).mass,config.b.weapon]);
+  const safeMass=(w:WeaponConfig)=>{try{return weaponMassProperties(w).mass}catch{return 0}};
+  const robots:[string,RobotConfig,number,WeaponConfig|null][]=[['a.robot',config.a.robot,safeMass(config.a.weapon),config.a.weapon]];
+  if(config.mode==='weapon-weapon')robots.push(['b.robot',config.b.robot,safeMass(config.b.weapon),config.b.weapon]);
   else if(config.mode==='weapon-armor'&&config.armor.mount==='robot')robots.push(['b.robot',config.b.robot,armorMassProperties(config.armor).mass,null]);
   robots.forEach(([path,r,partMass,w])=>{
     for(const key of ['mass','length','width','height'] as const)addPositive(issues,path+'.'+key,r[key],{mass:'整车总质量',length:'车体长度',width:'车体宽度',height:'车体高度'}[key]);
@@ -287,14 +299,15 @@ export function validateExperiment(config: Experiment): ValidationIssue[] {
     if(r.speed>r.maxSpeed)err(path+'.speed','本次车速不能超过最大车速。');
     if(r.mass<=partMass)err(path+'.mass','整车总质量必须大于单独建模的武器或护甲质量。');
     if(w){addPositive(issues,path+'.weaponHeight',r.weaponHeight,'轴心安装高度');addPositive(issues,path+'.overhang',r.overhang,'轴心前伸量',true);
+      if(w.shape==='mesh'&&validateWeaponModel(w.model).length)return;
       const weaponRadius=weaponMassProperties(w).radius;
-      const sweep=w.axis==='vertical'?weaponRadius:w.thickness/2;
+      const axial=weaponAxialBounds(w);const sweep=w.axis==='vertical'?weaponRadius:-axial[0];
       const bodyGapX=Math.max(0,r.overhang-r.length/2), bodyGapY=Math.max(0,r.weaponHeight-r.height);
       // The weapon is joined to its own chassis with contacts disabled, so the
       // solver never pushes it out. This check is a design guard against an
       // impossible-looking machine; the switch downgrades it to a warning for
       // builds that intentionally sink the weapon into the chassis.
-      if(w.axis==='vertical'?Math.hypot(bodyGapX,bodyGapY)<weaponRadius-1e-5:(r.weaponHeight-w.thickness/2<r.height&&bodyGapX<weaponRadius)){
+      if(w.axis==='vertical'?Math.hypot(bodyGapX,bodyGapY)<weaponRadius-1e-5:(r.weaponHeight+axial[0]<r.height&&bodyGapX<weaponRadius)){
         const message='武器扫掠范围与简化车体重叠，请增加轴心前伸量或安装高度。';
         if(!config.settings.allowWeaponChassisOverlap) err(path+'.overhang',message);
       }
@@ -303,6 +316,8 @@ export function validateExperiment(config: Experiment): ValidationIssue[] {
   });
   if(config.mode==='weapon-armor'){
     const a=config.armor;
+    if(a.damageEnabled!==undefined&&typeof a.damageEnabled!=='boolean')err('armor.damageEnabled','护甲损伤开关必须是布尔值。');
+    if(a.damageEnabled){for(const message of validatePartMaterial(armorMaterial(a)))err('armor.material',message);issues.push({path:'armor.damage',level:'warning',message:'护甲凹陷与破碎为局部接触功/材料阈值估算及简化平面裂面，非有限元或真实裂纹扩展；未断裂接触保持原剖面，碎片采用凸包近似。'});}
     for(const key of ['density','width'] as const)addPositive(issues,'armor.'+key,a[key],key==='density'?'护甲密度':'护甲宽度');
     if(a.shape!=='custom'){addPositive(issues,'armor.length',a.length,'板长');addPositive(issues,'armor.thickness',a.thickness,'真实板厚');}
     if(!['plate','bent','custom'].includes(a.shape))err('armor.shape','护甲形状无效。');

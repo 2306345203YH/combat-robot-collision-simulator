@@ -3,7 +3,9 @@ import type { ArmorConfig, BodyId, ContactEvent, Experiment, Frame, MassProperti
 import { armorMassProperties, getArmorProfile, getWeaponProfile, rpmAtStart, triangulateProfile, validateExperiment, weaponMassProperties } from './geometry';
 import { getInitialPoses } from './scene';
 import { snapshotMotion, readContactImpulse } from './contacts';
-import { createAssemblyPhysics,processAssemblyHit,assemblyFrame,type AssemblyPhysics } from '../assembly/physics';
+import { createAssemblyPhysics,processAssemblyHit,assemblyFrame,registerArmorDamage,type AssemblyPhysics } from '../assembly/physics';
+import { armorDamageTarget } from './armorDamage';
+import { weaponMesh, weaponAxialBounds } from './weaponMesh';
 
 type BodyMap = Partial<Record<BodyId, RAPIER.RigidBody>>;
 type ColliderMap = Partial<Record<BodyId, RAPIER.Collider[]>>;
@@ -137,6 +139,13 @@ function weaponBodyProps(w: WeaponConfig, p: MassProperties): MassProperties {
   return { ...p, centroid: qrotate(base, p.centroid), principalRotation: qmul(base, p.principalRotation) };
 }
 
+function createWeaponColliders(world:RAPIER.World,body:RAPIER.RigidBody,w:WeaponConfig,config:Experiment,groups:number):RAPIER.Collider[]{
+ if(w.shape!=='mesh')return createProfileColliders(world,body,getWeaponProfile(w),w.thickness,w.axis==='horizontal',config,groups);
+ const mesh=weaponMesh(w),points:number[]=[];for(let i=0;i<mesh.vertices.length;i+=3)points.push(...transformedPoint(mesh.vertices.slice(i,i+3) as Vec3,w.axis==='horizontal'));
+ const hull=RAPIER.ColliderDesc.convexHull(new Float32Array(points));if(!hull)throw new Error('实体武器无法建立凸包碰撞体。');
+ return [world.createCollider(setContactMaterial(hull,config).setCollisionGroups(groups),body)];
+}
+
 function attachRevolute(world: RAPIER.World, parent: RAPIER.RigidBody, child: RAPIER.RigidBody, config: Experiment, anchorParent: Vec3, axis: Vec3): void {
   const joint = world.createImpulseJoint(RAPIER.JointData.revolute(rapierVec(anchorParent), rapierVec([0, 0, 0]), rapierVec(axis)), parent, child, true);
   joint.setContactsEnabled(false);
@@ -165,7 +174,7 @@ function makeRuntime(config: Experiment): Runtime {
   bodies.aWeapon = createBody(world, 'aWeapon', initial.aWeapon!, weaponBodyProps(config.a.weapon, aWeaponProps), false);
   colliders.aChassis = [createBoxCollider(world, bodies.aChassis, config.a.robot.length, config.a.robot.height, config.a.robot.width, config)];
   const weaponGroups = config.settings.allowWeaponGroundContact ? DEFAULT_GROUPS : NO_GROUND_GROUPS;
-  colliders.aWeapon = createProfileColliders(world, bodies.aWeapon, getWeaponProfile(config.a.weapon), config.a.weapon.thickness, config.a.weapon.axis === 'horizontal', config, weaponGroups);
+  colliders.aWeapon = createWeaponColliders(world,bodies.aWeapon,config.a.weapon,config,weaponGroups);
   attachRevolute(world, bodies.aChassis, bodies.aWeapon, config, [config.a.robot.overhang, config.a.robot.weaponHeight - config.a.robot.height / 2, 0], config.a.weapon.axis === 'horizontal' ? [0, 1, 0] : [0, 0, 1]);
 
   let bWeaponProps: MassProperties | undefined;
@@ -181,7 +190,7 @@ function makeRuntime(config: Experiment): Runtime {
     bodies.bChassis = createBody(world, 'bChassis', initial.bChassis!, bodyMassProperties(bChassisMass, config.b.robot.length, config.b.robot.height, config.b.robot.width), false);
     bodies.bWeapon = createBody(world, 'bWeapon', initial.bWeapon!, weaponBodyProps(config.b.weapon, bWeaponProps), false);
     colliders.bChassis = [createBoxCollider(world, bodies.bChassis, config.b.robot.length, config.b.robot.height, config.b.robot.width, config)];
-    colliders.bWeapon = createProfileColliders(world, bodies.bWeapon, getWeaponProfile(config.b.weapon), config.b.weapon.thickness, config.b.weapon.axis === 'horizontal', config, weaponGroups);
+    colliders.bWeapon = createWeaponColliders(world,bodies.bWeapon,config.b.weapon,config,weaponGroups);
     attachRevolute(world, bodies.bChassis, bodies.bWeapon, config, [-config.b.robot.overhang, config.b.robot.weaponHeight - config.b.robot.height / 2, 0], config.b.weapon.axis === 'horizontal' ? [0, 1, 0] : [0, 0, 1]);
   } else {
     armorProps = armorMassProperties(config.armor);
@@ -196,6 +205,7 @@ function makeRuntime(config: Experiment): Runtime {
       const parentRotation = initial.bChassis!.rotation;
       configureFixed(world, bodies.bChassis, bodies.bArmor, qrotate(qconj(parentRotation), vecSub(initial.bArmor!.position, initial.bChassis!.position)), (90 - config.armor.angleDeg) * Math.PI / 180);
     }
+    if(config.armor.damageEnabled)assembly=registerArmorDamage(bodies.bArmor,colliders.bArmor,armorDamageTarget(config.armor));
   }
   const ground = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.1, 0));
   const groundCollider = createBoxCollider(world, ground, 8, 0.2, 8, config, true);
@@ -353,7 +363,9 @@ export async function simulate(config: Experiment, onProgress?: (progress: numbe
   const weapons=snapshot.mode==='weapon-weapon'?[snapshot.a.weapon,snapshot.b.weapon]:[snapshot.a.weapon];
   const maxOmega=Math.max(...weapons.map(w=>Math.max(rpmAtStart(w),w.driveEnabled?w.peakRpm:0)*Math.PI/30));
   const tipSpeed=weapons.reduce((s,w)=>s+Math.max(rpmAtStart(w),w.driveEnabled?w.peakRpm:0)*Math.PI/30*weaponMassProperties(w).radius,0)+snapshot.a.robot.speed+(snapshot.mode==='weapon-weapon'||snapshot.armor.mount==='robot'?snapshot.b.robot.speed:0);
-  const minFeature=Math.min(...weapons.map(w=>w.thickness),snapshot.mode==='weapon-armor'&&snapshot.armor.shape!=='custom'?snapshot.armor.thickness:Infinity);
+  const thickness=(w:WeaponConfig)=>{const b=weaponAxialBounds(w);return b[1]-b[0]};
+  const attackThickness=thickness(snapshot.a.weapon);
+  const minFeature=Math.min(...weapons.map(thickness),snapshot.mode==='weapon-armor'&&snapshot.armor.shape!=='custom'?snapshot.armor.thickness:Infinity);
   const requestedDt=Math.min(snapshot.settings.step,maxOmega>0?.035/maxOmega:Infinity,tipSpeed>0?minFeature/(2*tipSpeed):Infinity);
   const steps=Math.ceil(snapshot.settings.duration/requestedDt-1e-9);
   if(steps>160000||requestedDt<1e-6)throw new Error('当前转速或最小厚度需要超出第一版计算范围的时间步。请降低转速、缩短时长或使用更精细的专用求解器；本次不输出有效结论。');
@@ -394,13 +406,18 @@ export async function simulate(config: Experiment, onProgress?: (progress: numbe
         if (!targetHandles.has(other.handle) && !groundHandles.has(other.handle)&&!runtime.assembly?.handles.has(other.handle)) return;
         const contact = readContactImpulse(runtime.world, attack, other, motionBefore); if (!contact || contact.impulse <= 1e-9) return;
         const partId=runtime.assembly?.handles.get(other.handle);
-        const pair = groundHandles.has(other.handle) ? 'aWeapon-ground' : partId?`aWeapon-${partId}`:snapshot.mode === 'weapon-weapon' ? 'aWeapon-bWeapon' : 'aWeapon-bArmor';
+        const pair = groundHandles.has(other.handle) ? 'aWeapon-ground' : snapshot.mode==='weapon-armor'?'aWeapon-bArmor':partId?`aWeapon-${partId}`:snapshot.mode === 'weapon-weapon' ? 'aWeapon-bWeapon' : 'aWeapon-bArmor';
         if(partId)assemblyHits.push({collider:other,contact});
         const prior = pairContacts.get(pair);
         if (prior) { prior.impulse += contact.impulse; prior.point = contact.point; prior.normal = contact.normal; } else pairContacts.set(pair, contact);
       });
     }
-    if(runtime.assembly)for(const hit of assemblyHits)if(runtime.assembly.handles.has(hit.collider.handle))processAssemblyHit(runtime.world,runtime.assembly,runtime.bodies.aWeapon!,hit.collider,hit.contact,motionBefore,time,snapshot.a.weapon.thickness);
+    if(runtime.assembly)for(const hit of assemblyHits)if(runtime.assembly.handles.has(hit.collider.handle))processAssemblyHit(runtime.world,runtime.assembly,runtime.bodies.aWeapon!,hit.collider,hit.contact,motionBefore,time,attackThickness);
+    if(snapshot.mode==='weapon-armor'&&runtime.assembly?.entries.get('armor')?.detached&&runtime.bodies.bArmor){
+      // Release has transferred the material into real debris bodies. Remove
+      // the original armor and its mounting joint so its mass is not counted twice.
+      runtime.world.removeRigidBody(runtime.bodies.bArmor);delete runtime.bodies.bArmor;
+    }
     for (const [pair, contact] of pairContacts) {
       runtime.impulse += contact.impulse;
       const previous = active.get(pair);
